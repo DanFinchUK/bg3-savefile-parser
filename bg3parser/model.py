@@ -16,6 +16,7 @@ from .lsmf import (
     OWNED_AS_LOOT_COMP,
     WIELDED_COMP,
     parse_lsmf_ability_scores,
+    parse_lsmf_ability_scores_by_template,
     parse_lsmf_action_resources,
     parse_lsmf_all_container_positions,
     parse_lsmf_camp_supplies,
@@ -463,6 +464,7 @@ def gather_report(save_path: str, frames: dict[str, bytes] | None = None, opts=N
     entity_classes: dict[int, tuple] = {}
     prepared_spells: dict[int, list[tuple]] = {}
     ability_scores: dict[int, tuple] = {}
+    template_abilities: dict[str, tuple] = {}
     health: dict[int, tuple] = {}
     stats_entities: dict[str, int] = {}
     action_resources: dict[int, list[tuple]] = {}
@@ -478,6 +480,7 @@ def gather_report(save_path: str, frames: dict[str, bytes] | None = None, opts=N
         power_lists = parse_lsmf_power_lists(lsmf_blob)
         supplies = parse_lsmf_camp_supplies(lsmf_blob)
         ability_scores = parse_lsmf_ability_scores(lsmf_blob)
+        template_abilities = parse_lsmf_ability_scores_by_template(lsmf_blob)
         health = parse_lsmf_health(lsmf_blob, ability_scores, CLASS_UUID_NAMES)
         report.save_info['camp_supplies'] = supplies if supplies else None
         report.save_info['recipes'] = parse_lsmf_recipes(lsmf_blob)
@@ -603,10 +606,7 @@ def gather_report(save_path: str, frames: dict[str, bytes] | None = None, opts=N
 
     def attach_sheet(char: CharacterReport, ent: int) -> None:
         """Attach the character sheet read through the entity's ECS rows:
-        ability scores, hit points, action resources, concentration."""
-        ab = ability_scores.get(ent)
-        if ab is not None:
-            char.abilities = dict(zip(('str', 'dex', 'con', 'int', 'wis', 'cha'), ab, strict=False))
+        hit points, action resources, concentration."""
         h = health.get(ent)
         if h is not None:
             char.hp = {'current': h[0], 'max': h[1], 'temp': h[2], 'temp_max': h[3]}
@@ -626,6 +626,22 @@ def gather_report(save_path: str, frames: dict[str, bytes] | None = None, opts=N
         spell_id = concentration.get(ent)
         if spell_id is not None:
             char.concentration = {'id': spell_id, 'name': dn.spell_name_for(spell_id)}
+
+    def attach_abilities(char: CharacterReport, position: tuple | None) -> None:
+        # SaveInfo positions also identify custom avatars and hirelings whose
+        # template is not in PARTY_ORIGINS. Ignore non-Character child nodes.
+        templates = {
+            nd['attrs'].get('CurrentTemplate', '').lower()
+            for nd in nodes0
+            if nd['name'] == 'Character'
+            and position is not None
+            and nd['attrs'].get('Translate') == position
+        }
+        if len(templates) != 1:
+            return
+        ab = template_abilities.get(next(iter(templates)))
+        if ab is not None:
+            char.abilities = dict(zip(('str', 'dex', 'con', 'int', 'wis', 'cha'), ab, strict=True))
 
     def spell_refs(ent: int) -> list[SpellRef]:
         """Build the SpellRef list for an entity's book, marking prepared spells.
@@ -959,6 +975,9 @@ def gather_report(save_path: str, frames: dict[str, bytes] | None = None, opts=N
         )
         report.characters.append(char)
 
+        pos = char_info.get('Position')
+        attach_abilities(char, tuple(pos) if isinstance(pos, list) else char_positions.get(pos_key))
+
         # Spells — exact book from the ECS blob: the template link gives the
         # entity directly; build matching remains as the hireling fallback.
         ent = linked_entity(char_info.get('Origin', 'Generic'))
@@ -1026,6 +1045,8 @@ def gather_report(save_path: str, frames: dict[str, bytes] | None = None, opts=N
                 at_camp=True,
             )
             report.characters.append(char)
+
+            attach_abilities(char, char_positions.get(name))
 
             ent = linked_entity(name)
             if ent is None:

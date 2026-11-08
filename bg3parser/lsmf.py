@@ -225,28 +225,82 @@ def parse_lsmf_component_rows(
 LSMF_HEAP_BASE = 48
 
 
-def lsmf_component_index(blob: bytes) -> dict[str, tuple]:
+def lsmf_component_index(blob: bytes, *, absolute_offsets: bool = False) -> dict[str, tuple]:
     """Map component name -> (elem_size, row_count, data_offset, owner_rows).
 
     owner_rows is the component's ownerlist as a tuple of entity-row indices,
     in data-row order (the k-th data row belongs to owner_rows[k]); empty for
     components without an ownerlist.
+
+    absolute_offsets applies the LSMF header base to both data and ownerlist
+    pointers. The default retains the older readers' address convention.
     """
     scanned = scan_lsmf_blob(blob)
     if scanned is None:
         return {}
     comp_descs, records = scanned
+    base = LSMF_HEAP_BASE if absolute_offsets else 0
     owners: dict[int, tuple] = {}
     for comp, start, ec in records:
         try:
-            owners[comp] = struct.unpack_from(f'<{ec}I', blob, start)
+            owners[comp] = struct.unpack_from(f'<{ec}I', blob, start + base)
         except struct.error:
             continue
     out: dict[str, tuple] = {}
     for i, (name, elem, rows, off) in enumerate(comp_descs):
         if name and name not in out:
-            out[name] = (elem, rows, off, owners.get(i, ()))
+            out[name] = (elem, rows, off + base, owners.get(i, ()))
     return out
+
+
+def parse_lsmf_ability_scores_by_template(blob: bytes) -> dict[str, tuple]:
+    """Read effective abilities through the shared Stats/Template owner IDs.
+
+    StatsComponent has ordinary 36-byte rows: eight bytes of metadata, six
+    i32 scores, and an i32 proficiency bonus. Both its data pointer and its
+    ownerlist pointer are relative to the 48-byte LSMF header. Reading either
+    pointer without that base produces apparent missing/shifted owners.
+
+    Keying by template keeps this reader independent of the legacy entity
+    numbering used by the spell-book and health readers. Conflicting values
+    for a shared template are omitted rather than assigned to a character.
+    """
+    idx = lsmf_component_index(blob, absolute_offsets=True)
+    st = idx.get('game.stats.v3.StatsComponent')
+    tc = idx.get('game.templates.v0.TemplateComponent')
+    if not st or not tc or st[0] != 36 or tc[0] != 24:
+        return {}
+
+    scores: dict[int, tuple] = {}
+    elem, rows, off, owners = st
+    for k, ent in enumerate(owners[:rows]):
+        p = off + k * elem
+        if p + elem > len(blob):
+            break
+        abilities = struct.unpack_from('<6i', blob, p + 8)
+        if all(1 <= value <= 40 for value in abilities):
+            scores[ent] = abilities
+
+    candidates: dict[str, set[tuple]] = {}
+    elem, rows, off, owners = tc
+    for k, ent in enumerate(owners[:rows]):
+        p = off + k * elem
+        if p + elem > len(blob):
+            break
+        if ent not in scores:
+            continue
+        ptr, length = struct.unpack_from('<QI', blob, p)
+        start = ptr + LSMF_HEAP_BASE
+        if length != 36 or start + length > len(blob):
+            continue
+        try:
+            template = blob[start : start + length].decode('ascii').lower()
+        except UnicodeDecodeError:
+            continue
+        candidates.setdefault(template, set()).add(scores[ent])
+    return {
+        template: next(iter(values)) for template, values in candidates.items() if len(values) == 1
+    }
 
 
 def parse_lsmf_spellbooks(blob: bytes) -> dict[int, list[str]]:
