@@ -620,6 +620,7 @@ Imp_Summon
   Level     : 1
   XP        : 0
   Location  : HAV_IsobelRoom_SUB
+  Abilities : STR 6  DEX 17  CON 13  INT 11  WIS 12  CHA 14
   Spells/Abilities : (spell book not found)
   Equipment : no items attributed (character off current level?)
   Carried / personal inventory (0):

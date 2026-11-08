@@ -1124,29 +1124,31 @@ not assumed:
 
 ### Ability scores and hit points: packed streams (✅ decoded 2026-06)
 
-Two components break the row-grid rule documented above: their data sections
-are *packed streams* whose records do not align with the `elem_size` row grid
-implied by the descriptor, and whose ownerlists contain phantom entries (an
-owner with no record). Reads must anchor on the stream header and realign
-owners to records.
+Ability scores in character reports are read by
+`parse_lsmf_ability_scores_by_template`. Apply the 48-byte LSMF base to **both**
+the component's data offset and its ownerlist pointer. StatsComponent and
+TemplateComponent then share the same owner IDs; no row shifting or class-level
+guessing is needed. Templates are matched to the character's `CurrentTemplate`
+in Globals. Conflicting scores for a shared template are left unresolved.
 
-- `game.stats.v3.StatsComponent` (descriptor says elem=36): a 20-byte stream
-  header, then one 36-byte record per non-phantom owner:
+- `game.stats.v3.StatsComponent` has ordinary 36-byte rows:
 
   | Offset | Type | Field |
   |-------:|------|-------|
-  | 0 | i32[6] | effective ability scores STR, DEX, CON, INT, WIS, CHA (item effects such as Gloves of Dexterity are folded in) |
-  | 24 | i32 | proficiency bonus |
-  | 28 | u16 | small enum |
-  | 30 | u16 | per-save handle |
-  | 32 | i32 | zero |
+  | 0 | 8 bytes | metadata |
+  | 8 | i32[6] | effective ability scores STR, DEX, CON, INT, WIS, CHA (including item effects) |
+  | 32 | i32 | proficiency bonus |
+
+The legacy health reader still uses the older stream interpretation and entity
+numbering, including `parse_lsmf_ability_scores` for its CON-based validation.
+It is separate from the template-based ability reader described above:
 
 - `game.stats.v0.HealthComponent` (descriptor says elem=32): a 16-byte stream
   header, then 32-byte records `{i32 current, i32 max, i32 temp,
   i32 temp_max, 16-byte GUID}`. Entities can appear in two epochs with the
   current state first, so the first occurrence per entity wins.
 
-The owner-to-record realignment is a small dynamic program
+Its owner-to-record realignment is a small dynamic program
 (`solve_owner_shifts` in `lsmf.py`): walking owners in order, owner k maps to
 record `k - shift(k)` where the shift is non-decreasing and grows by at most
 1 per step (each phantom owner pushes later records back by one). A
